@@ -1,0 +1,78 @@
+import base64
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import mss
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+from framework import utils
+
+
+class GmailSender:
+
+    def __init__(self, service, sender: str, to: str, message_text: str, screenshot: bool = False):
+        self.service = service
+        self.sender = sender
+        self.to = to
+        # TODO put the correct subject here
+        self.subject = f'[Python Error] ERROR'
+        self.message_text = message_text
+        self.screenshot = screenshot
+
+    def take_screenshot(self) -> bytes:
+        with mss.mss() as sct:
+            monitor = sct.monitors[-1]
+            sct_img = sct.grab(monitor)
+            png: bytes = mss.tools.to_png(sct_img.rgb, sct_img.size)  # noqa F405
+        return png
+
+    def create_message_with_attachment(self, file_bytes=None):
+        message = MIMEMultipart()
+        message['to'] = self.to
+        message['from'] = self.sender
+        message['subject'] = self.subject
+
+        msg = MIMEText(self.message_text)
+        message.attach(msg)
+
+        if file_bytes is not None:
+            msg = MIMEBase('application', 'octet-stream')
+            msg.set_payload(file_bytes)
+            encoders.encode_base64(msg)
+
+            msg.add_header('Content-Disposition', 'attachment', filename='screenshot.png')
+            message.attach(msg)
+
+        raw_message = base64.urlsafe_b64encode(message.as_bytes())
+        raw_message = raw_message.decode()
+        raw_message = raw_message.replace("+", "-").replace("/", "_").replace("=", "")
+
+        return {'raw': raw_message}
+
+    def send_message(self, user_id):
+        if self.screenshot:
+            screenshot = self.take_screenshot()
+            message = self.create_message_with_attachment(screenshot)
+        else:
+            message = self.create_message_with_attachment()
+        try:
+            self.service.users().messages().send(userId=user_id, body=message).execute()
+        except HttpError as error:
+            print(f'An error occurred: {error}')
+
+
+# TODO make prettier?
+SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+# authent
+flow = InstalledAppFlow.from_client_secrets_file(
+    'path_to_creds.json', SCOPES)
+creds = flow.run_local_server(port=0)
+
+# ... some authentication process that results in `creds`
+service = build('gmail', 'v1', credentials=creds)
+
+gmail_sender = GmailSender(service, "sender@gmail.com", "receiver@gmail.com", "Message text", True)
+gmail_sender.send_message("me") # me google understands like default when you don`t know the exact user_id
